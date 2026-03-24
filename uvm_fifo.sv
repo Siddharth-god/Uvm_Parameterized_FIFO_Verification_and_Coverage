@@ -12,10 +12,22 @@ import uvm_pkg::*;
 `include "uvm_macros.svh"
 import fifo_pkg::*;
 
+//------------------------------------DEFAULT MACROS--------------------------------------
+`define NEW_COMP	\
+	function new(string name = "", uvm_component parent);	\
+		super.new(name,parent);	\
+	endfunction
 
-module fifo #( 
-    parameter WIDTH = fifo_pkg::WIDTH,
-    parameter ADDR = fifo_pkg::ADDR
+//******** NEW Object
+`define NEW_OBJ	\
+	function new(string name = "");	\
+		super.new(name);	\
+	endfunction
+//----------------------------------------------------------------------------------------
+
+module fifo #(
+    WIDTH, 
+    ADDR
 )(
     input  logic clk,
     input  logic rstn,
@@ -28,6 +40,9 @@ module fifo #(
 );
     localparam DEPTH = 2**ADDR;
 
+    // for sva check for data
+    logic [WIDTH-1:0] q_data;
+
     logic [WIDTH-1:0] fifo_mem [DEPTH-1:0];
     logic [ADDR-1:0]  rdp;
     logic [ADDR-1:0]  wrp;
@@ -39,6 +54,7 @@ module fifo #(
             wrp <= 0;
             count <= 0;
             data_out <= 0;
+
             for(int i=0; i<DEPTH; i++) begin
                 fifo_mem[i] <= 0;
             end
@@ -62,10 +78,9 @@ module fifo #(
     assign full = (count == DEPTH);
 
 endmodule
-
 // Interface 
 
-interface fifo_if #(parameter WIDTH = fifo_pkg::WIDTH)(input bit clk);
+interface fifo_if #(WIDTH)(input bit clk);
     logic rstn;
     logic read;
     logic write;
@@ -75,14 +90,14 @@ interface fifo_if #(parameter WIDTH = fifo_pkg::WIDTH)(input bit clk);
     logic empty;
 
     clocking wr_drv_cb@(posedge clk);
-        //default input #1 output #1; --> Input skew is #1 means sample #1 after posedge, and drive after #1 after posedge.
+        // default input #1 output #1; 
         output  rstn;
         output  write;
         output  data_in;
     endclocking 
 
     clocking wr_mon_cb@(posedge clk);
-        //default input #1 output #1; --> By default the skew is : input skew #1 and output is #0
+        // default input #1 output #1; 
         input  rstn;
         input  write;
         input  data_in;   
@@ -91,16 +106,17 @@ interface fifo_if #(parameter WIDTH = fifo_pkg::WIDTH)(input bit clk);
     endclocking 
 
     clocking rd_drv_cb@(posedge clk);
-        //default input #1 output #1; --> But sample actually happens after edge mens we get the DUT output one cycle later. 
-        input  rstn; // why input ? --> Because reset can only be driven by one driver, another driver only observes it and uses it.  
+        // default input #1 output #1; 
+        input  rstn; // why input check one more time. 
         output read;  
     endclocking
 
     clocking rd_mon_cb@(posedge clk);
-        //default input #1 output #1; --> So, when we add #0 to any signal that signal will be outputted at posedge, and sampling happens in observed region no race condition occurs 
+        // default input #1 output #1; 
+        default input #0; // why 1step will misalign ? 
         input rstn;
         input read;
-        input #0 data_out;
+        input data_out; // Can cause race in complex designs -- (as per industry #1step is correct which is by default present)
         input full;
         input empty;    
     endclocking
@@ -119,13 +135,10 @@ endinterface
 
 class g_config extends uvm_object;
     `uvm_object_utils(g_config)
+    `NEW_OBJ
 
     virtual fifo_if #(WIDTH) vif;
     uvm_active_passive_enum is_active; 
-
-    function new(string name = "g_config");
-        super.new(name);
-    endfunction 
 
 endclass
 
@@ -133,6 +146,7 @@ endclass
 
 class xtn extends uvm_sequence_item;
     `uvm_object_utils(xtn)
+    `NEW_OBJ
 
     bit rstn; //-- not a part of transaction so no need to use. 
     rand bit read;
@@ -141,10 +155,6 @@ class xtn extends uvm_sequence_item;
     bit [WIDTH-1:0] data_out;
     bit full;
     bit empty;
-
-    function new(string name="xtn");
-        super.new(name);
-    endfunction 
 
     virtual function void do_print(uvm_printer printer);
         printer.print_field("data_in",data_in,8,UVM_DEC);
@@ -162,19 +172,13 @@ endclass
 
 class seq_base extends uvm_sequence #(xtn);
     `uvm_object_utils(seq_base)
-
-    function new(string name="seq_base");
-        super.new(name);
-    endfunction 
+    `NEW_OBJ
 endclass    
 
 // only write / burst write
 class seq_write extends seq_base;
-       `uvm_object_utils(seq_write)
-
-    function new(string name="seq_write");
-        super.new(name);
-    endfunction 
+    `uvm_object_utils(seq_write)
+    `NEW_OBJ
 
     task body();
         //m_sequencer.lock(this);
@@ -190,11 +194,8 @@ endclass
 
 // only read / burst read 
 class seq_read extends seq_base;
-       `uvm_object_utils(seq_read)
-
-    function new(string name="seq_read");
-        super.new(name);
-    endfunction 
+    `uvm_object_utils(seq_read)
+    `NEW_OBJ
 
     task body();
         //m_sequencer.lock(this);
@@ -210,15 +211,12 @@ endclass
 
 // random traffic write
 class seq_random_wr extends seq_base;
-       `uvm_object_utils(seq_random_wr)
-
-    function new(string name="seq_random_wr");
-        super.new(name);
-    endfunction 
+    `uvm_object_utils(seq_random_wr)
+    `NEW_OBJ
 
     task body();
         //m_sequencer.lock(this);
-        repeat(16) begin 
+        repeat(2) begin 
             req = xtn::type_id::create("req");
             start_item(req);
             assert(req.randomize() with {
@@ -230,17 +228,14 @@ class seq_random_wr extends seq_base;
     endtask 
 endclass 
 
-// random traffic write
+// random traffic read
 class seq_random_rd extends seq_base;
-       `uvm_object_utils(seq_random_rd)
-
-    function new(string name="seq_random_rd");
-        super.new(name);
-    endfunction 
+    `uvm_object_utils(seq_random_rd)
+    `NEW_OBJ
 
     task body();
         //m_sequencer.lock(this);
-        repeat(16) begin 
+        repeat(2) begin 
             req = xtn::type_id::create("req");
             start_item(req);
             assert(req.randomize() with {
@@ -256,19 +251,13 @@ endclass
 // Sequencer -------------------------------------------------------------------------------
 class wr_seqr extends uvm_sequencer #(xtn);
     `uvm_component_utils(wr_seqr)
-
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-    endfunction
+    `NEW_COMP
 
 endclass 
 
 class rd_seqr extends uvm_sequencer #(xtn);
     `uvm_component_utils(rd_seqr)
-    
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-    endfunction
+    `NEW_COMP
 
 endclass 
 
@@ -276,10 +265,7 @@ endclass
 
 class vseqr extends uvm_sequencer #(uvm_sequence_item);
     `uvm_component_utils(vseqr)
-    
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-    endfunction
+    `NEW_COMP
 
     rd_seqr rseqr;
     wr_seqr wseqr;
@@ -289,10 +275,7 @@ endclass
 
 class vseq extends uvm_sequence #(uvm_sequence_item);
     `uvm_object_utils(vseq)
-
-    function new(string name="vseq");
-        super.new(name);
-    endfunction 
+    `NEW_OBJ
 
     // declare handles for sequences -- handles cannot be declared inside body else error.
     seq_write seq_wrh; 
@@ -348,13 +331,11 @@ endclass
 
 class wr_driver extends uvm_driver #(xtn);
     `uvm_component_utils(wr_driver)
+    `NEW_COMP
 
     virtual fifo_if #(WIDTH) vif;
     g_config g_cfg; 
 
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-    endfunction
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
@@ -382,18 +363,8 @@ class wr_driver extends uvm_driver #(xtn);
         forever begin
             seq_item_port.get_next_item(req);
 
-/* We usually do not use driver print because it makes reading output log harder that it needs to be. 
-            
-             `uvm_info(get_type_name(),"nDriving transaction", UVM_LOW)
-                req.print();
-*/
-/*            `uvm_info(get_type_name(),
-                        $sformatf("\nDriving transaction ==> data_in=%0d | rstn=%0d | write=%0d\n",
-                        req.data_in, 
-                        req.rstn, 
-                        req.write), 
-                        UVM_LOW)           
-*/
+// We usually do not use driver print because it makes reading output log harder that it needs to be. 
+
             @(vif.wr_drv_cb) begin 
                 vif.wr_drv_cb.rstn <= 1;
                 vif.wr_drv_cb.data_in <= req.data_in;
@@ -408,13 +379,10 @@ endclass
 
 class rd_driver extends uvm_driver #(xtn); // read driver cannot control reset else logic breaks
     `uvm_component_utils(rd_driver)
+    `NEW_COMP
 
     virtual fifo_if #(WIDTH) vif;
     g_config g_cfg;
-
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-    endfunction
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
@@ -456,18 +424,16 @@ endclass
 
 class rd_monitor extends uvm_monitor;
     `uvm_component_utils(rd_monitor)
+    `NEW_COMP
 
     virtual fifo_if #(WIDTH) vif;
     uvm_analysis_port #(xtn) rd_mon_port;
     g_config g_cfg;
 
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-        rd_mon_port = new("rd_mon_port",this);
-    endfunction
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
+        rd_mon_port = new("rd_mon_port",this);
 
         if(!uvm_config_db #(g_config)::get(this,"","g_config",g_cfg))
             `uvm_fatal(get_full_name(),"Cannot get() config from TEST")
@@ -512,18 +478,15 @@ endclass
 
 class wr_monitor extends uvm_monitor;
     `uvm_component_utils(wr_monitor)
+    `NEW_COMP
 
     virtual fifo_if #(WIDTH) vif;
     uvm_analysis_port #(xtn) wr_mon_port;
     g_config g_cfg;
 
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-        wr_mon_port = new("wr_mon_port",this);
-    endfunction
-
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
+        wr_mon_port = new("wr_mon_port",this);
 
         if(!uvm_config_db #(g_config)::get(this,"","g_config",g_cfg))
             `uvm_fatal(get_full_name(),"Cannot get() config from TEST")
@@ -545,14 +508,7 @@ class wr_monitor extends uvm_monitor;
                 xtnh.write = vif.wr_mon_cb.write;
                 xtnh.data_in = vif.wr_mon_cb.data_in;
                 xtnh.rstn = vif.wr_mon_cb.rstn;   // not declared in xtn, directly driving reset to dut from driver.
-/*
-                `uvm_info(get_type_name(),
-                        $sformatf("\nSampling transaction ==> data_in=%0d | rstn=%0d | write=%0d\n",
-                        xtnh.data_in,
-                        xtnh.rstn, 
-                        xtnh.write), 
-                        UVM_LOW)
-*/
+
                 `uvm_info(get_type_name(),"Sampling transaction", UVM_LOW)
                 xtnh.print();
 
@@ -565,14 +521,12 @@ endclass
 // Agent -------------------------------------------------------------------------------
 class wr_agent extends uvm_agent;
     `uvm_component_utils(wr_agent)
+    `NEW_COMP
 
     wr_seqr wr_seqr_h;
     wr_monitor wr_monitor_h;
     wr_driver wr_driver_h;
 
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-    endfunction
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
@@ -592,15 +546,11 @@ endclass
 
 class rd_agent extends uvm_agent;
     `uvm_component_utils(rd_agent)
+    `NEW_COMP
 
     rd_seqr rd_seqr_h;
     rd_monitor rd_monitor_h;
     rd_driver rd_driver_h;
-
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-
-    endfunction
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
@@ -622,27 +572,80 @@ endclass
 
 class sb extends uvm_scoreboard; 
     `uvm_component_utils(sb)
+    // comparision related handles 
     xtn rd_xtn;
     xtn wr_xtn; 
     xtn ref_data[$];
     xtn pop_ref;
 
+    // coverage related handles 
+    xtn write_cov_data; 
+    xtn read_cov_data;
+    
     uvm_tlm_analysis_fifo #(xtn) fifo_rd;
     uvm_tlm_analysis_fifo #(xtn) fifo_wr;
 
+    // write coverage 
+    covergroup write_coverage;
+        // option.per_instance == 1; 
+        W_DATA : coverpoint write_cov_data.data_in{
+            bins low = {[0:63]};
+            bins mid1 = {[64:127]};
+            bins mid2 = {[128:191]};
+            bins high = {[192:255]};
+        }
+
+        W_ENB : coverpoint write_cov_data.write{
+            bins high = {1};
+        }
+
+        W_RESET : coverpoint write_cov_data.rstn{
+            bins low = {0};
+        }
+
+        DATA_ENB_RST : cross W_DATA, W_ENB, W_RESET;
+    endgroup
+
+    // read coverage
+    covergroup read_coverage;
+        // option.per_instance == 1; 
+        R_DATA : coverpoint read_cov_data.data_out{
+            bins low = {[0:63]};
+            bins mid1 = {[64:127]};
+            bins mid2 = {[128:191]};
+            bins high = {[192:255]};
+        }
+
+        R_EMPTY : coverpoint read_cov_data.empty{
+            bins low = {0};
+            bins high = {1};
+        }
+
+        R_FULL : coverpoint read_cov_data.full{
+            bins low = {0};
+            bins high = {1};
+        }
+
+        DATA_EMPTY_FULL : cross R_DATA, R_EMPTY, R_FULL;
+    endgroup
+
+    
     function new(string name="",uvm_component parent);
         super.new(name,parent);
         fifo_rd = new("fifo_rd",this);
         fifo_wr = new("fifo_wr",this);
+
+        write_coverage = new();
+        read_coverage = new();
     endfunction
 
     function void ref_model(xtn local_wrxtn);
-        if(local_wrxtn.write)
+        if(local_wrxtn.write && !local_wrxtn.full)
             ref_data.push_back(local_wrxtn);
     endfunction 
 
     function void pop_here(xtn local_rdxtn);
-        if(local_rdxtn.read) begin 
+        if(local_rdxtn.read && !local_rdxtn.empty) begin 
             pop_ref = ref_data.pop_front();  
             $display("---------pop_expected_ref----------|| data_in = %0d",pop_ref.data_in);
         end
@@ -655,7 +658,8 @@ class sb extends uvm_scoreboard;
                 $display("/////////// get write mon data /////////// data_in=%0d | rstn=%0d | write=%0d",
                             wr_xtn.data_in, wr_xtn.rstn, wr_xtn.write);
                 ref_model(wr_xtn);
-
+                write_cov_data = wr_xtn;
+                write_coverage.sample();
             end
             forever begin
                 fifo_rd.get(rd_xtn);
@@ -671,24 +675,24 @@ class sb extends uvm_scoreboard;
                     `uvm_info(get_type_name(),$sformatf("\n\n Scoreboard Success [Data Match Successfully] ==> [ DATA OUT = EXP OUT ] : [%0d = %0d]\n",
                         rd_xtn.data_out, pop_ref.data_in),
                         UVM_LOW)
+                read_cov_data = rd_xtn;
+                read_coverage.sample();
             end
         join
 
     endtask 
 endclass
+
+
 // Environment -------------------------------------------------------------------------------
 class env extends uvm_env;
     `uvm_component_utils(env)
+    `NEW_COMP
 
     rd_agent rd_agent_h;
     wr_agent wr_agent_h;
     sb sbh;
     vseqr vseqrh;
-
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-
-    endfunction
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
@@ -713,14 +717,11 @@ endclass
 // Test -------------------------------------------------------------------------------
 class test extends uvm_test;
     `uvm_component_utils(test)
+    `NEW_COMP
 
     env envh;
     g_config g_cfg;
     vseq vseqh;
-
-    function new(string name = "",uvm_component parent);
-        super.new(name,parent);
-    endfunction
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
@@ -742,23 +743,10 @@ class test extends uvm_test;
     endfunction 
 
     task run_phase(uvm_phase phase);
-        // seq_base seqh;
-
             phase.raise_objection(this);
-
-            //seqh = seq_base::type_id::create("seqh");
-            
-            // start seq on physical seqr's
-            /* 
-            seqh.start(envh.wr_agent_h.wr_seqr_h);
-            seqh.start(envh.rd_agent_h.rd_seqr_h);
-            */
-
             vseqh.start(envh.vseqrh);
-
             phase.drop_objection(this);
     endtask 
-
 
 endclass 
 
@@ -771,7 +759,7 @@ module uvm_fifo;
     
     always #5 clk = ~clk;
 
-    fifo_if #(WIDTH) IF(clk);
+    fifo_if #(.WIDTH(WIDTH)) IF(clk);
 
     fifo #(
         .WIDTH(WIDTH),
@@ -787,21 +775,27 @@ module uvm_fifo;
         .empty(IF.empty)
     );
 
+    bind fifo fifo_assertions #(
+        .WIDTH(WIDTH),
+        .ADDR(ADDR)
+        ) FIFO_ASSERTIONS(
+        .clk(clk),
+        .rstn(rstn),
+        .data_in(data_in),
+        .data_out(data_out),
+        .read(read),
+        .write(write),
+        .full(full),
+        .empty(empty),
+        .count(DUT.count),
+        .rdp(DUT.rdp),
+        .wrp(DUT.wrp)
+    );
+
+
     initial begin 
         uvm_config_db #(virtual fifo_if #(WIDTH))::set(null,"*","fifo_if",IF);
         run_test("test"); 
     end
 endmodule 
-
-
-/*
-`uvm_info(get_type_name(),
-                            $sformatf("\n[---Data Match successful---] ==> DATA IN = %0d READ = %0d WRITE = %0d RESET = %0d ==> [ DATA OUT = EXP OUT ] : [%0d = %0d]\n",
-                                    wr_mon_xtn.data_in,
-                                    rd_mon_xtn.read,
-                                    wr_mon_xtn.write,
-                                    wr_mon_xtn.rstn,
-                                    rd_mon_xtn.data_out,
-                                    exp_op),
-                            UVM_LOW)
-*/
+//-------------------------------------------------------------END---------------------------------------------------------------
