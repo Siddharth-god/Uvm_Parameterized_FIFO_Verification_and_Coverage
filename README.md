@@ -259,6 +259,16 @@ Even a small delta delay can cause misalignment if scoreboard assumes zero laten
 - Added _Write_ and _Read_ Side Coverage covering all INPUTS and OUTPUTS
 - Coverage is written inside the _Score Board_
 
+---
+
+## DEBUGGING THE SCOREBOARD LOGIC – UPDATED CODE
+- Fixed multiple issues in the scoreboard logic that were affecting correctness
+- Improved queue handling by adding missing boundary conditions (full/empty awareness)
+- Updated write monitor sampling to include full and empty signals, ensuring accurate expected data generation
+- Added _copy()_ method for transaction handling (currently unused, may be removed later if not required)
+- Enhanced coverage model to better reflect functional behavior and corner cases
+
+
 ## FUTURE IMPROVEMENTS
 - Improve random stress scenarios
 - Modularize UVM components into packages/files

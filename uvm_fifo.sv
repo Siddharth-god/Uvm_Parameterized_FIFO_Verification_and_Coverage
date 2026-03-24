@@ -99,6 +99,7 @@ interface fifo_if #(WIDTH)(input bit clk);
     clocking wr_mon_cb@(posedge clk);
         // default input #1 output #1; 
         input  rstn;
+        input  read;
         input  write;
         input  data_in;   
         input  full;
@@ -148,7 +149,7 @@ class xtn extends uvm_sequence_item;
     `uvm_object_utils(xtn)
     `NEW_OBJ
 
-    bit rstn; //-- not a part of transaction so no need to use. 
+    rand bit rstn; //-- not a part of transaction so no need to use. 
     rand bit read;
     rand bit write;
     rand bit [WIDTH-1:0] data_in;
@@ -165,6 +166,23 @@ class xtn extends uvm_sequence_item;
         printer.print_field("empty",empty,1,UVM_DEC);
         printer.print_field("data_out",data_out,8,UVM_DEC);
     endfunction 
+
+    function void do_copy (uvm_object rhs);
+
+        xtn rhs_;
+            if(!$cast(rhs_,rhs)) begin
+                        `uvm_fatal("do_copy","cast of the rhs object failed")
+            end
+            super.do_copy(rhs);
+
+            this.read= rhs_.read;
+            this.data_out= rhs_.data_out;
+            this.full= rhs_.full;
+            this.empty= rhs_.empty;
+            this.data_in = rhs_.data_in;
+            this.rstn = rhs_.rstn;
+            this.write = rhs_.write;
+        endfunction:do_copy
 endclass 
 
 
@@ -173,7 +191,23 @@ endclass
 class seq_base extends uvm_sequence #(xtn);
     `uvm_object_utils(seq_base)
     `NEW_OBJ
-endclass    
+endclass 
+
+// reset 
+class seq_rst extends seq_base;
+    `uvm_object_utils(seq_rst)
+    `NEW_OBJ
+
+    task body();
+    super.body();
+        repeat(2) begin 
+            req = xtn::type_id::create("req");
+            start_item(req);
+            assert(req.randomize() with {rstn == 0;});
+            finish_item(req);
+        end
+    endtask 
+endclass 
 
 // only write / burst write
 class seq_write extends seq_base;
@@ -182,10 +216,10 @@ class seq_write extends seq_base;
 
     task body();
         //m_sequencer.lock(this);
-        repeat(16) begin 
+        repeat(17) begin 
             req = xtn::type_id::create("req");
             start_item(req);
-            assert(req.randomize() with {write == 1 && read == 0;});
+            assert(req.randomize() with {write == 1 && rstn == 1 && read == 0;});
             finish_item(req);
         end
         //m_sequencer.unlock(this);
@@ -199,10 +233,10 @@ class seq_read extends seq_base;
 
     task body();
         //m_sequencer.lock(this);
-        repeat(16) begin 
+        repeat(20) begin 
             req = xtn::type_id::create("req");
             start_item(req);
-            assert(req.randomize() with {write == 0 && read == 1;});
+            assert(req.randomize() with {write == 0 && rstn == 1 && read == 1;});
             finish_item(req);
         end
         //m_sequencer.unlock(this);
@@ -216,11 +250,12 @@ class seq_random_wr extends seq_base;
 
     task body();
         //m_sequencer.lock(this);
-        repeat(2) begin 
+        repeat(100) begin 
             req = xtn::type_id::create("req");
             start_item(req);
             assert(req.randomize() with {
-                write dist { 1:=50, 0:=50};
+                write dist { 1:=20, 0:=80};
+                rstn == 1;
             });
             finish_item(req);
         end
@@ -235,11 +270,12 @@ class seq_random_rd extends seq_base;
 
     task body();
         //m_sequencer.lock(this);
-        repeat(2) begin 
+        repeat(100) begin 
             req = xtn::type_id::create("req");
             start_item(req);
             assert(req.randomize() with {
-                read dist { 1:=50, 0:=50};
+                read dist { 1:=70, 0:=30};
+                rstn == 1;
             });
             finish_item(req);
         end
@@ -282,6 +318,7 @@ class vseq extends uvm_sequence #(uvm_sequence_item);
     seq_read seq_rdh;
     seq_random_wr seq_rdm_wr_h;
     seq_random_rd seq_rdm_rd_h;
+    seq_rst seq_rsth;
 
     vseqr vseqrh;
 
@@ -292,6 +329,7 @@ class vseq extends uvm_sequence #(uvm_sequence_item);
             `uvm_fatal(get_full_name(), "Casting failed in Vsequence");
 
         // create the objects for sequences
+        seq_rsth = seq_rst::type_id::create("seq_rsth");
         seq_rdh = seq_read::type_id::create("seq_rdh");
         seq_wrh = seq_write::type_id::create("seq_wrh");
 
@@ -300,15 +338,22 @@ class vseq extends uvm_sequence #(uvm_sequence_item);
         seq_rdm_rd_h = seq_random_rd::type_id::create("seq_rdm_rd_h");
 
 
-        // start sequence on physical sequencer
+    // start sequence on physical sequencer
 
-        // Burst mode ------------------------------------
+    // Reset mode ------------------------------------
+
+        $display("\n-----------------------------RESET MODE ON-----------------------------\n\n");
+        seq_rsth.start(vseqrh.wseqr);
+
+
+    // Burst mode ------------------------------------
+
         $display("\n-----------------------------BURST MODE ON-----------------------------\n\n");
         seq_wrh.start(vseqrh.wseqr);
         seq_rdh.start(vseqrh.rseqr);
 
 
-        // Simultaneous read and write -------------------
+    // Simultaneous read and write -------------------
 
         $display("\n-----------------------------SIMULTANEOUS RW MODE ON-----------------------------\n\n");
         fork
@@ -316,7 +361,7 @@ class vseq extends uvm_sequence #(uvm_sequence_item);
             seq_wrh.start(vseqrh.wseqr);
         join
 
-        // Random traffic ----------------------------
+    // Random traffic ----------------------------
 
         $display("\n-----------------------------RANDOM TRAFFIC MODE ON-----------------------------\n\n");
         fork
@@ -350,23 +395,23 @@ class wr_driver extends uvm_driver #(xtn);
     endfunction    
 
     task run_phase(uvm_phase phase);
-
+/*
         @(vif.wr_drv_cb) begin 
             vif.wr_drv_cb.rstn <= 0;
             vif.wr_drv_cb.data_in <= 0;
             vif.wr_drv_cb.write <= 0;
         end
-        repeat(2) @(vif.wr_drv_cb);
+        repeat(5) @(vif.wr_drv_cb);
 
             vif.wr_drv_cb.rstn <= 1; // reset released
-
+*/
         forever begin
             seq_item_port.get_next_item(req);
 
 // We usually do not use driver print because it makes reading output log harder that it needs to be. 
 
             @(vif.wr_drv_cb) begin 
-                vif.wr_drv_cb.rstn <= 1;
+                vif.wr_drv_cb.rstn <= req.rstn;
                 vif.wr_drv_cb.data_in <= req.data_in;
                 vif.wr_drv_cb.write <= req.write;
             end
@@ -400,18 +445,8 @@ class rd_driver extends uvm_driver #(xtn); // read driver cannot control reset e
 
         forever begin
             seq_item_port.get_next_item(req);
-/*
-            `uvm_info(get_type_name(),"nDriving transaction", UVM_LOW)
-                req.print();
-*/
-/*            `uvm_info(get_type_name(),
-                        $sformatf("\nDriving transaction ==> read=%0d\n",
-                        req.read), 
-                        UVM_LOW)
-*/
-            @(vif.rd_drv_cb)
 
-            if(vif.rd_drv_cb.rstn)
+            @(vif.rd_drv_cb)
                 vif.rd_drv_cb.read <= req.read;
 
             seq_item_port.item_done();
@@ -420,7 +455,52 @@ class rd_driver extends uvm_driver #(xtn); // read driver cannot control reset e
 
 endclass 
 
-// Monitor -------------------------------------------------------------------------------\Logic needs to be written
+// Monitor -------------------------------------------------------------------------------
+
+class wr_monitor extends uvm_monitor;
+    `uvm_component_utils(wr_monitor)
+    `NEW_COMP
+
+    virtual fifo_if #(WIDTH) vif;
+    uvm_analysis_port #(xtn) wr_mon_port;
+    g_config g_cfg;
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        wr_mon_port = new("wr_mon_port",this);
+
+        if(!uvm_config_db #(g_config)::get(this,"","g_config",g_cfg))
+            `uvm_fatal(get_full_name(),"Cannot get() config from TEST")
+    endfunction     
+
+    // connect config vif to vif 
+    function void connect_phase(uvm_phase phase);
+        vif = g_cfg.vif;
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        xtn xtnh;
+
+        forever begin 
+            @(vif.wr_mon_cb)
+            
+            if(vif.wr_mon_cb.write)  begin 
+                xtnh = xtn::type_id::create("xtnh");
+                xtnh.write = vif.wr_mon_cb.write;
+                xtnh.data_in = vif.wr_mon_cb.data_in;
+                xtnh.rstn = vif.wr_mon_cb.rstn;
+                xtnh.full = vif.wr_mon_cb.full;
+                xtnh.empty = vif.wr_mon_cb.empty;
+
+                `uvm_info(get_type_name(),"Sampling transaction", UVM_LOW)
+                xtnh.print();
+
+                wr_mon_port.write(xtnh);
+            end
+        end
+    endtask    
+endclass
+
 
 class rd_monitor extends uvm_monitor;
     `uvm_component_utils(rd_monitor)
@@ -450,21 +530,14 @@ class rd_monitor extends uvm_monitor;
         forever begin 
             @(vif.rd_mon_cb)
             
-            if(vif.rd_mon_cb.read && !vif.rd_mon_cb.empty) begin 
+            if(vif.rd_mon_cb.read) begin 
                 xtnh = xtn::type_id::create("xtnh");
+                xtnh.rstn = vif.rd_mon_cb.rstn;
                 xtnh.read = vif.rd_mon_cb.read;
                 xtnh.data_out = vif.rd_mon_cb.data_out;
                 xtnh.full = vif.rd_mon_cb.full;
                 xtnh.empty = vif.rd_mon_cb.empty;
-/*
-                `uvm_info(get_type_name(),
-                        $sformatf("\nSampling transaction ==> data_out=%0d | read=%0d | full=%0d | empty=%0d\n",
-                        xtnh.data_out,
-                        xtnh.read, 
-                        xtnh.full, 
-                        xtnh.empty), 
-                        UVM_LOW)
-*/
+
                 `uvm_info(get_type_name(),"Sampling transaction", UVM_LOW)
                 xtnh.print();
 
@@ -473,49 +546,6 @@ class rd_monitor extends uvm_monitor;
         end
     endtask
 
-endclass
-
-
-class wr_monitor extends uvm_monitor;
-    `uvm_component_utils(wr_monitor)
-    `NEW_COMP
-
-    virtual fifo_if #(WIDTH) vif;
-    uvm_analysis_port #(xtn) wr_mon_port;
-    g_config g_cfg;
-
-    function void build_phase(uvm_phase phase);
-        super.build_phase(phase);
-        wr_mon_port = new("wr_mon_port",this);
-
-        if(!uvm_config_db #(g_config)::get(this,"","g_config",g_cfg))
-            `uvm_fatal(get_full_name(),"Cannot get() config from TEST")
-    endfunction     
-
-    // connect config vif to vif 
-    function void connect_phase(uvm_phase phase);
-        vif = g_cfg.vif;
-    endfunction
-
-    task run_phase(uvm_phase phase);
-        xtn xtnh;
-
-        forever begin 
-            @(vif.wr_mon_cb)
-            
-            if(vif.wr_mon_cb.write && !vif.wr_mon_cb.full)  begin 
-                xtnh = xtn::type_id::create("xtnh");
-                xtnh.write = vif.wr_mon_cb.write;
-                xtnh.data_in = vif.wr_mon_cb.data_in;
-                xtnh.rstn = vif.wr_mon_cb.rstn;   // not declared in xtn, directly driving reset to dut from driver.
-
-                `uvm_info(get_type_name(),"Sampling transaction", UVM_LOW)
-                xtnh.print();
-
-                wr_mon_port.write(xtnh);
-            end
-        end
-    endtask    
 endclass
 
 // Agent -------------------------------------------------------------------------------
@@ -577,6 +607,8 @@ class sb extends uvm_scoreboard;
     xtn wr_xtn; 
     xtn ref_data[$];
     xtn pop_ref;
+    int push_debugger;
+    int pop_debugger;
 
     // coverage related handles 
     xtn write_cov_data; 
@@ -585,48 +617,49 @@ class sb extends uvm_scoreboard;
     uvm_tlm_analysis_fifo #(xtn) fifo_rd;
     uvm_tlm_analysis_fifo #(xtn) fifo_wr;
 
+    // covergroup fifo_interaction_cg;
+    //     RD : coverpoint read_cov_data.read;
+    //     WR : coverpoint write_cov_data.write;
+
+    //     WR_RD    : cross RD, WR;      // Read and Write cross check
+    // endgroup 
+
     // write coverage 
     covergroup write_coverage;
-        // option.per_instance == 1; 
-        W_DATA : coverpoint write_cov_data.data_in{
+        W_DATA : coverpoint write_cov_data.data_in iff (write_cov_data.write){
             bins low = {[0:63]};
             bins mid1 = {[64:127]};
             bins mid2 = {[128:191]};
             bins high = {[192:255]};
         }
-
-        W_ENB : coverpoint write_cov_data.write{
-            bins high = {1};
+        WR : coverpoint write_cov_data.write{
+            bins wr_enb_high = {1};
         }
 
-        W_RESET : coverpoint write_cov_data.rstn{
-            bins low = {0};
-        }
+        WR_FULL : coverpoint write_cov_data.full;
+        WR_EMPTY : coverpoint write_cov_data.empty;
+        W_RESET : coverpoint write_cov_data.rstn;
 
-        DATA_ENB_RST : cross W_DATA, W_ENB, W_RESET;
+        WR_FULL_x_WR : cross WR_FULL, WR; // rul and write cross check
     endgroup
 
     // read coverage
     covergroup read_coverage;
         // option.per_instance == 1; 
-        R_DATA : coverpoint read_cov_data.data_out{
+        R_DATA : coverpoint read_cov_data.data_out iff (read_cov_data.read){
             bins low = {[0:63]};
             bins mid1 = {[64:127]};
             bins mid2 = {[128:191]};
             bins high = {[192:255]};
         }
-
-        R_EMPTY : coverpoint read_cov_data.empty{
-            bins low = {0};
-            bins high = {1};
+        RD : coverpoint read_cov_data.read{
+            bins rd_enb_high = {1};
         }
 
-        R_FULL : coverpoint read_cov_data.full{
-            bins low = {0};
-            bins high = {1};
-        }
-
-        DATA_EMPTY_FULL : cross R_DATA, R_EMPTY, R_FULL;
+        RD_FULL : coverpoint read_cov_data.full;
+        RD_EMPTY : coverpoint read_cov_data.empty;
+        
+        RD_EMPTY_x_RD : cross RD_EMPTY, RD; // Read and empty cross check  
     endgroup
 
     
@@ -640,14 +673,54 @@ class sb extends uvm_scoreboard;
     endfunction
 
     function void ref_model(xtn local_wrxtn);
-        if(local_wrxtn.write && !local_wrxtn.full)
-            ref_data.push_back(local_wrxtn);
+        // xtn local_wrxtn;  // no need of copy method.
+
+        // local_wrxtn = xtn::type_id::create("local_wrxtn");
+        // local_wrxtn.copy(temp);
+
+        if(local_wrxtn.write) begin 
+
+            if(local_wrxtn.rstn && !local_wrxtn.full) begin 
+                ref_data.push_back(local_wrxtn);
+                push_debugger++;
+                $display("push_debugger = %0d",push_debugger);
+                $display("---------Data Pushed into queue----------|| dut_data = %0d at time=%0t | read=%0d | write=%0d | full=%0d | empty=%0d | rstn=%0d",
+                        local_wrxtn.data_in, 
+                        $time,
+                        local_wrxtn.read,
+                        local_wrxtn.write,
+                        local_wrxtn.full,
+                        local_wrxtn.empty,
+                        local_wrxtn.rstn
+                    );
+            end
+            else if(local_wrxtn.full)
+                $display("\nFinally FIFO is ---> FULL=%0d\n",local_wrxtn.full);
+            else
+                $display("---PUSH--- HAS NOT HAPPENED --> Maybe it is either FULL or RESET\n");
+        end
     endfunction 
 
     function void pop_here(xtn local_rdxtn);
-        if(local_rdxtn.read && !local_rdxtn.empty) begin 
-            pop_ref = ref_data.pop_front();  
-            $display("---------pop_expected_ref----------|| data_in = %0d",pop_ref.data_in);
+        if(local_rdxtn.read) begin 
+
+            if(!local_rdxtn.empty && local_rdxtn.rstn && (ref_data.size() > 0)) begin 
+                pop_ref = ref_data.pop_front();  
+                pop_debugger++;
+                $display("pop_debugger = %0d",pop_debugger);
+                $display("---------Data Popped from queue----------|| exp_data = %0d at time=%0t | read=%0d | write=%0d | empty=%0d | full=%0d",
+                        pop_ref.data_out,
+                        $time, 
+                        local_rdxtn.read,
+                        local_rdxtn.write,
+                        local_rdxtn.empty,
+                        local_rdxtn.full
+                    );
+            end
+            else if(local_rdxtn.empty)  
+                $display("\nFinally FIFO is ---> EMPTY=%0d\n",local_rdxtn.empty);
+            else 
+                $display("---POP--- HAS NOT HAPPENED --> Maybe it is either EMPTY or RESET\n");
         end
     endfunction
     
@@ -655,16 +728,16 @@ class sb extends uvm_scoreboard;
         fork
             forever begin
                 fifo_wr.get(wr_xtn);
-                $display("/////////// get write mon data /////////// data_in=%0d | rstn=%0d | write=%0d",
-                            wr_xtn.data_in, wr_xtn.rstn, wr_xtn.write);
+                //$display("/////////// get write mon data /////////// data_in=%0d | rstn=%0d | write=%0d | full=%0d | empty = %0d | time=%0t",
+                            //wr_xtn.data_in, wr_xtn.rstn, wr_xtn.write, wr_xtn.full, wr_xtn.empty, $time);
                 ref_model(wr_xtn);
                 write_cov_data = wr_xtn;
                 write_coverage.sample();
             end
             forever begin
                 fifo_rd.get(rd_xtn);
-                $display("/////////// get read mon data /////////// data_out=%0d | read=%0d | full=%0d | empty=%0d",
-                            rd_xtn.data_out, rd_xtn.read, rd_xtn.full, rd_xtn.empty);
+                //$display("/////////// get read mon data /////////// data_out=%0d | read=%0d | write=%0d | full=%0d | empty=%0d | time=%0t",
+                            //rd_xtn.data_out, rd_xtn.read, rd_xtn.write, rd_xtn.full, rd_xtn.empty, $time);
                 pop_here(rd_xtn);
 
                 if(!(pop_ref.data_in == rd_xtn.data_out))
@@ -675,6 +748,7 @@ class sb extends uvm_scoreboard;
                     `uvm_info(get_type_name(),$sformatf("\n\n Scoreboard Success [Data Match Successfully] ==> [ DATA OUT = EXP OUT ] : [%0d = %0d]\n",
                         rd_xtn.data_out, pop_ref.data_in),
                         UVM_LOW)
+
                 read_cov_data = rd_xtn;
                 read_coverage.sample();
             end
